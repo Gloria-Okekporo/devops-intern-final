@@ -1,0 +1,148 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/gloria-okekporo/devops-intern-final
+
+jobs:
+  lint-build-test:
+    name: Lint, Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate shell scripts
+        run: |
+          sh -n scripts/sysinfo.sh
+          sh -n scripts/healthcheck.sh
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg BUILD_SHA="${GITHUB_SHA::7}" \
+            -t "${IMAGE_NAME}:test" \
+            ./app
+
+      - name: Verify image size
+        run: |
+          SIZE=$(docker image inspect "${IMAGE_NAME}:test" --format '{{.Size}}')
+          MAX_SIZE=$((60 * 1024 * 1024))
+
+          echo "Image size: ${SIZE} bytes"
+
+          if [ "$SIZE" -ge "$MAX_SIZE" ]; then
+            echo "ERROR: Image is 60 MB or larger."
+            exit 1
+          fi
+
+      - name: Start container
+        run: |
+          docker run -d \
+            --name devops-intern-test \
+            -p 8080:8080 \
+            "${IMAGE_NAME}:test"
+
+      - name: Wait for application
+        run: |
+          for i in {1..15}; do
+            if curl -fsS http://localhost:8080/healthz; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs devops-intern-test
+          exit 1
+
+      - name: Test health endpoint
+        run: |
+          curl -fsS http://localhost:8080/healthz
+          echo
+
+      - name: Verify non-root runtime
+        run: |
+          USER=$(docker inspect devops-intern-test --format '{{.Config.User}}')
+          echo "Container user: $USER"
+
+          if [ "$USER" = "root" ] || [ -z "$USER" ]; then
+            echo "ERROR: Container is configured to run as root."
+            exit 1
+          fi
+
+      - name: Verify Docker healthcheck
+        run: |
+          for i in {1..15}; do
+            STATUS=$(docker inspect devops-intern-test --format '{{.State.Health.Status}}')
+
+            echo "Health status: $STATUS"
+
+            if [ "$STATUS" = "healthy" ]; then
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          docker inspect devops-intern-test
+          exit 1
+
+      - name: Verify build SHA
+        run: |
+          curl -fsS http://localhost:8080/ | grep -q "${GITHUB_SHA::7}"
+
+      - name: Stop test container
+        if: always()
+        run: |
+          docker rm -f devops-intern-test || true
+
+  publish:
+    name: Publish Image to GHCR
+    needs: lint-build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=short,prefix=
+            type=raw,value=latest
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
