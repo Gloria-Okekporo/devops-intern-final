@@ -167,3 +167,31 @@ app/
 ├── index.html
 
 └── nginx.conf
+
+---
+
+## Prerequisites
+
+The following tools are required to run and verify the project locally:
+
+- Git
+- Docker Desktop
+- PowerShell
+- curl
+- A GitHub account for CI/CD and GHCR publishing
+
+Pinned container images used by the project:
+
+- `nginx:1.27-alpine`
+- `grafana/loki:3.5.0`
+- `grafana/promtail:3.5.0`
+
+---
+
+## Quick Start
+
+Clone the repository and move into the project directory:
+
+```powershell
+git clone https://github.com/Gloria-Okekporo/devops-intern-final.git
+cd devops-intern-final
